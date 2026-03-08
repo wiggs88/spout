@@ -18,6 +18,7 @@ import { ShopSystem } from '../systems/ShopSystem';
 import { PhysicsSystem, InputState } from '../systems/PhysicsSystem';
 import { CameraSystem } from '../systems/CameraSystem';
 import { EnemySystem } from '../systems/EnemySystem';
+import { ArtifactSystem } from '../systems/ArtifactSystem';
 import { CRTPostFx } from '../effects/CRTPostFx';
 import { createShip, getShipPixels } from '../entities/Ship';
 import { ShipState, GAME_WIDTH, GAME_HEIGHT, PARTICLE_COUNT, PARTICLE_LIFE, SHIP_MAX_HEALTH, SHIP_REGEN_PER_SEC, MAX_ENERGY, ENERGY_REGEN, FOG_RADIUS_DEFAULT, FOG_SOFTNESS } from '../../types/game';
@@ -32,6 +33,7 @@ export class GameScene extends Phaser.Scene {
   private shipPhysics!: PhysicsSystem;
   private cam!: CameraSystem;
   private enemies!: EnemySystem;
+  private artifactSystem!: ArtifactSystem;
   private ship!: ShipState;
 
   private terrainTexture!: Phaser.Textures.CanvasTexture;
@@ -57,6 +59,7 @@ export class GameScene extends Phaser.Scene {
     esc: Phaser.Input.Keyboard.Key;
     p: Phaser.Input.Keyboard.Key;
     l: Phaser.Input.Keyboard.Key;
+    k: Phaser.Input.Keyboard.Key;
   };
 
   private score: number = 0;
@@ -67,10 +70,17 @@ export class GameScene extends Phaser.Scene {
   private energy: { current: number } = { current: MAX_ENERGY };
   private shopOpen: boolean = false;
   private nearShop: boolean = false;
+  private debugGodMode: boolean = false;
+
+  // World pickups
+  private flashlightPickedUp: boolean = false;
+  private static readonly FLASHLIGHT_POS = { x: 1024, y: 1750 };
+  private static readonly PICKUP_RADIUS = 12;
 
   // Intro sequence state
   private introStartTime: number = 0;
   private introPhase: number = 0; // 0=blackout, 1=ship assembly, 2=env reveal, 3=ready
+  private introShakeStarted: boolean = false;
 
   // Callback to update React HUD
   public onStateChange?: (state: {
@@ -81,7 +91,9 @@ export class GameScene extends Phaser.Scene {
     shopOpen: boolean; nearShop: boolean;
     shopMarkerPos: { x: number; y: number } | null;
     shopScreenPos: { x: number; y: number } | null;
+    hubMarkerPos: { x: number; y: number } | null;
     oreCollects: { tier: number; screenX: number; screenY: number }[];
+    nearPedestal: { shape: string; color: number; screenX: number; screenY: number; placed: boolean } | null;
   }) => void;
 
   // Callbacks for shop actions from React
@@ -108,31 +120,7 @@ export class GameScene extends Phaser.Scene {
     this.cam = new CameraSystem();
     this.enemies = new EnemySystem();
     this.enemies.scatter(this.terrain);
-    // DEBUG: spawn magma tower on a wall near player start
-    // Find a wall-adjacent spot near spawn
-    {
-      const cx = 1024, cy = 2048;
-      for (let r = 30; r < 120; r += 2) {
-        let found = false;
-        for (let a = 0; a < Math.PI * 2; a += 0.2) {
-          const wx = Math.floor(cx + Math.cos(a) * r);
-          const wy = Math.floor(cy + Math.sin(a) * r);
-          if (!this.terrain.isSolid(wx, wy)) continue;
-          // Check for open neighbor
-          const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
-          for (const [ddx, ddy] of dirs) {
-            if (!this.terrain.isSolid(wx + ddx * 3, wy + ddy * 3)) {
-              const angle = Math.atan2(ddy, ddx);
-              this.enemies.magmaTowers.push({ x: wx, y: wy, hp: 80, active: true, hitFlash: 0, attachAngle: angle, blobsLeft: 5, fireCooldown: 90, blobs: [], residues: [] });
-              found = true;
-              break;
-            }
-          }
-          if (found) break;
-        }
-        if (found) break;
-      }
-    }
+    this.artifactSystem = new ArtifactSystem();
 
     // Create ship
     this.ship = createShip();
@@ -165,6 +153,7 @@ export class GameScene extends Phaser.Scene {
       esc: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ESC),
       p: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.P),
       l: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.L),
+      k: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.K),
     };
 
     // Prevent keys from reaching browser
@@ -241,6 +230,7 @@ export class GameScene extends Phaser.Scene {
 
       if (this.introPhase >= 3 && (this.inputState.left || this.inputState.right || this.inputState.thrust || this.inputState.reverse)) {
         this.gameStarted = true;
+        this.artifactSystem.introOverride = null;
       } else {
         this.renderFrame();
         this.notifyState();
@@ -307,6 +297,16 @@ export class GameScene extends Phaser.Scene {
       this.notifyState();
     }
 
+    // Debug: K toggles god mode (invincible + super carve)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.k)) {
+      this.debugGodMode = !this.debugGodMode;
+      if (this.debugGodMode) {
+        this.shopSystem.inventory.owned.set('carve', 3);
+        if (!this.shopSystem.isEquipped('carve')) this.shopSystem.equip('carve', 0);
+      }
+      this.notifyState();
+    }
+
     // Pause game loop while shop is open
     if (this.shopOpen) {
       this.renderFrame();
@@ -322,6 +322,18 @@ export class GameScene extends Phaser.Scene {
       if (!this.ship.alive) {
         this.gameOver = true;
         this.notifyState();
+      }
+
+      // Debug god mode: invincible + unlimited energy + auto-carve
+      if (this.debugGodMode) {
+        this.ship.health = SHIP_MAX_HEALTH;
+        this.ship.invincibleFrames = 10;
+        this.energy.current = MAX_ENERGY;
+        // Continuous super carve (bigger radius than lvl 3)
+        if (this.ship.alive) {
+          const seed = this.ship.x * 9.1 + this.ship.y * 13.3;
+          this.terrain.explodeAt(this.ship.x, this.ship.y, 40, seed);
+        }
       }
 
       // Health regen
@@ -349,6 +361,23 @@ export class GameScene extends Phaser.Scene {
 
       // Ore collection (touch-based)
       this.oreSystem.checkCollection(this.ship);
+
+      // Flashlight pickup
+      if (!this.flashlightPickedUp) {
+        const fp = GameScene.FLASHLIGHT_POS;
+        const dx = this.ship.x - fp.x;
+        const dy = this.ship.y - fp.y;
+        if (dx * dx + dy * dy < GameScene.PICKUP_RADIUS * GameScene.PICKUP_RADIUS) {
+          this.flashlightPickedUp = true;
+          this.shopSystem.inventory.owned.set('flashlight', 1);
+          // Auto-equip to first empty passive slot (or slot 0 if all full)
+          const emptySlot = this.shopSystem.inventory.equipped.indexOf(null);
+          this.shopSystem.equip('flashlight', emptySlot !== -1 ? emptySlot : 0);
+        }
+      }
+
+      // Artifact collection / rope physics / placement
+      this.artifactSystem.update(this.ship);
 
       // Check if near a rest area
       this.nearShop = this.terrain.isNearRestArea(this.ship.x, this.ship.y);
@@ -454,10 +483,10 @@ export class GameScene extends Phaser.Scene {
         crt.setFogParams(shipUVx, shipUVy, shipGlow, 0.04);
         crt.setGlitch(0.6 * (1 - progress));
       }
-    } else if (elapsed < 5000) {
+    } else if (elapsed < 7000) {
       // Phase 2: Environment reveal — fog opens up
       this.introPhase = 2;
-      const progress = (elapsed - 3000) / 2000;
+      const progress = Math.min(1, (elapsed - 3000) / 2000);
       const eased = 1 - Math.pow(1 - progress, 3);
       const fogRadius = 0.08 + eased * (FOG_RADIUS_DEFAULT - 0.08);
       if (crt) {
@@ -474,6 +503,68 @@ export class GameScene extends Phaser.Scene {
         crt.setFogParams(shipUVx, shipUVy, FOG_RADIUS_DEFAULT, FOG_SOFTNESS);
         crt.setGlitch(0);
       }
+    }
+
+    // ── Artifact hub power-up sequence ─────────────────────────
+    // Overlays on phase 2: ring → lines → towers → glow+shake → snap off
+    if (elapsed < 5000) {
+      // Before artifact intro: hide all hub elements
+      this.artifactSystem.introOverride = { ring: 0, lines: 0, towers: 0, glow: 0 };
+    } else if (elapsed < 7000) {
+      const t = elapsed - 5000;
+      let ring = 0, lines = 0, towers = 0, glow = 1;
+
+      // Ring flickers on (0–400ms)
+      if (t < 400) {
+        const p = t / 400;
+        ring = Math.random() < p * 1.5 ? (0.4 + p * 0.6) : 0;
+      } else {
+        ring = 1;
+      }
+
+      // Lines flicker on (400–800ms)
+      if (t >= 400 && t < 800) {
+        const p = (t - 400) / 400;
+        lines = Math.random() < p * 1.5 ? (0.4 + p * 0.6) : 0;
+      } else if (t >= 800) {
+        lines = 1;
+      }
+
+      // Towers flicker on (800–1200ms)
+      if (t >= 800 && t < 1200) {
+        const p = (t - 800) / 400;
+        towers = Math.random() < p * 1.5 ? (0.4 + p * 0.6) : 0;
+      } else if (t >= 1200) {
+        towers = 1;
+      }
+
+      // All glow intensifies + screenshake (1200–1700ms)
+      if (t >= 1200 && t < 1700) {
+        glow = 1 + ((t - 1200) / 500) * 3;
+        if (!this.introShakeStarted) {
+          this.introShakeStarted = true;
+          this.cameras.main.shake(500, 0.006);
+        }
+      }
+
+      // Flash fades off (1700–1900ms)
+      if (t >= 1700 && t < 1900) {
+        const fade = 1 - (t - 1700) / 200;
+        ring *= fade;
+        lines *= fade;
+        towers *= fade;
+        glow = 4 * fade;
+      }
+
+      // Fully off (1900ms+)
+      if (t >= 1900) {
+        ring = 0; lines = 0; towers = 0; glow = 0;
+      }
+
+      this.artifactSystem.introOverride = { ring, lines, towers, glow };
+    } else {
+      // Phase 3+: normal rendering
+      this.artifactSystem.introOverride = null;
     }
   }
 
@@ -498,6 +589,12 @@ export class GameScene extends Phaser.Scene {
 
     // Draw rest area beacons
     this.terrain.renderRestAreaBeacons(this.graphics, camX, camY, this.time.now);
+
+    // Draw artifacts (pedestals, connection lines, center circle, artifacts + ropes)
+    this.artifactSystem.render(this.graphics, camX, camY, this.time.now);
+
+    // Draw world pickups
+    this.renderPickups(camX, camY, this.time.now);
 
     // Draw item effects
     this.items.render(this.graphics, camX, camY, this.time.now, this.ship);
@@ -567,6 +664,39 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private renderPickups(camX: number, camY: number, time: number): void {
+    const pulse = Math.sin(time * 0.004) * 0.3 + 0.7;
+    const glow = Math.sin(time * 0.003) * 0.15 + 0.85;
+
+    // Flashlight pickup (yellow/white glow)
+    if (!this.flashlightPickedUp) {
+      const fp = GameScene.FLASHLIGHT_POS;
+      const sx = fp.x - camX;
+      const sy = fp.y - camY;
+      if (sx > -20 && sx < GAME_WIDTH + 20 && sy > -20 && sy < GAME_HEIGHT + 20) {
+        // Soft glow halo
+        this.graphics.fillStyle(0xffeeaa, glow * 0.12);
+        this.graphics.fillCircle(sx, sy, 10);
+        // Circle body (flashlight lens)
+        this.graphics.fillStyle(0xffeeaa, pulse);
+        this.graphics.fillCircle(sx, sy, 3);
+        // 4 rays
+        this.graphics.lineStyle(1, 0xffeeaa, pulse * 0.7);
+        for (let i = 0; i < 4; i++) {
+          const a = (i / 4) * Math.PI * 2 + time * 0.001;
+          this.graphics.beginPath();
+          this.graphics.moveTo(sx + Math.cos(a) * 4, sy + Math.sin(a) * 4);
+          this.graphics.lineTo(sx + Math.cos(a) * 7, sy + Math.sin(a) * 7);
+          this.graphics.strokePath();
+        }
+        // Center bright dot
+        this.graphics.fillStyle(0xffffff, pulse);
+        this.graphics.fillRect(sx, sy, 1, 1);
+      }
+    }
+
+  }
+
   private restart(): void {
     this.ship = createShip();
     this.startY = this.ship.y;
@@ -577,8 +707,11 @@ export class GameScene extends Phaser.Scene {
     this.energy = { current: MAX_ENERGY };
     this.shopOpen = false;
     this.nearShop = false;
+    this.debugGodMode = false;
+    this.flashlightPickedUp = false;
     this.introStartTime = 0;
     this.introPhase = 0;
+    this.introShakeStarted = false;
 
     // Rebuild terrain and pickups
     this.terrain = new TerrainSystem();
@@ -591,6 +724,7 @@ export class GameScene extends Phaser.Scene {
     this.items = new ItemSystem(this.shopSystem);
     this.enemies = new EnemySystem();
     this.enemies.scatter(this.terrain);
+    this.artifactSystem = new ArtifactSystem();
 
     this.cam.x = this.ship.x - GAME_WIDTH / 2;
     this.cam.y = this.ship.y - GAME_HEIGHT / 2;
@@ -627,7 +761,9 @@ export class GameScene extends Phaser.Scene {
       nearShop: this.nearShop,
       shopMarkerPos: this.terrain.getShopMarkerScreenPos(this.cam.x, this.cam.y, this.ship.x, this.ship.y),
       shopScreenPos: this.terrain.getNearestRestAreaScreenPos(this.cam.x, this.cam.y, this.ship.x, this.ship.y),
+      hubMarkerPos: this.artifactSystem.getHubMarkerScreenPos(camX, camY),
       oreCollects,
+      nearPedestal: this.artifactSystem.getNearPedestal(this.ship.x, this.ship.y, camX, camY),
     });
   }
 }

@@ -133,17 +133,21 @@ All enemies/obstacles are **RED** and **glow**. Player destroys them with rocket
 
 ## 6. Game Flow / Level Design
 
-- [ ] Starting area leads through an obvious path to an opening
-- [ ] First encounter: a few weak enemies (Wall Leeches)
-- [ ] Rhombus-shaped room with the Flashlight item in the center (first major pickup)
-- [ ] Branching paths:
-  - One path leads to a **locked door**
-  - Another path leads to an area with the **key** for that door
-  - Behind the locked door (or elsewhere): the **final gem/object** that completes the game
-- [ ] Pre-designed areas mixed with procedural terrain
-- [ ] Win condition: find the special gem/object (details TBD)
-
-**Implementation notes:** This shifts terrain from fully procedural to a hybrid approach. Key rooms/paths can be carved during `generateInitial()` at known coordinates, with procedural fill around them. A simple key/door state can live in GameScene. The flashlight pickup in the rhombus room serves as the tutorial moment.
+- [x] Center hub: 4 pedestals at diagonal offsets from spawn (1024, 2048)
+- [x] 4 artifacts at map corners — star/squares/coil/pinwheel shapes
+- [x] Artifacts carried via rope physics (top-down Verlet, chains if multiple held)
+- [x] Place artifact on matching pedestal to progress
+- [x] Center circle activates when all 4 placed (win condition TBD)
+- [x] Ancient chasm starting area — symmetrical hub with alcoves, fractal ring, pedestal bays
+- [x] Grand flashlight corridor — hourglass tunnel north of spawn, pillared hallway, circular sanctum
+- [x] Flashlight pickup at sanctum center (1024, 1750) — auto-equips on collect
+- [x] Hub power-up intro sequence — ring → lines → towers flicker on with glow + screenshake
+- [x] Hub direction marker (HUD, screen-edge arrow like shop marker)
+- [x] Item bar hidden until items equipped; new items flicker in on equip
+- [ ] Win sequence when player enters activated center circle
+- [ ] Enemy placement tuning — deliberate zones vs fully random
+- [ ] Tutorial flow — first Wall Leech encounter design
+- [ ] Locked door / key mechanic (removed for now, design TBD)
 
 ---
 
@@ -174,7 +178,7 @@ When single-player Spout is complete:
 
 ## 9. Housekeeping
 
-- [ ] Set up git repo (init, .gitignore, initial commit)
+- [x] Set up git repo (init, .gitignore, initial commit)
 
 ---
 

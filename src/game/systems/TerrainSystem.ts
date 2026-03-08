@@ -3,6 +3,7 @@ import { convChain } from '../utils/ConvChain';
 import { CAVE_SAMPLE, SAMPLE_WIDTH, SAMPLE_HEIGHT } from '../data/caveSample';
 import { debugConfig } from '../debug';
 import { WORLD_WIDTH, WORLD_HEIGHT, TERRAIN_MAX_HP, ROCK_HP, GAME_WIDTH, GAME_HEIGHT } from '../../types/game';
+import { ArtifactSystem } from './ArtifactSystem';
 
 // Rest area detection radius (ship must be within this distance of center)
 const REST_AREA_DETECT_RADIUS = 30;
@@ -13,6 +14,8 @@ export class TerrainSystem {
   private canvas: OffscreenCanvas;
   private ctx: OffscreenCanvasRenderingContext2D;
   private dirty: boolean = true;
+  private lastViewX: number = -1;
+  private lastViewY: number = -1;
 
   // Track the generated region (we generate in chunks as player ascends)
   private generatedUpTo: number;
@@ -77,6 +80,60 @@ export class TerrainSystem {
 
     // Carve rest areas (shop locations) at depth intervals
     this.carveRestAreas();
+
+    // Carve artifact corner rooms and expanded center hub
+    ArtifactSystem.carveTerrain(this.buffer);
+
+    // ── Grand corridor to flashlight chamber ─────────────────────
+    // Wide entrance tapering into a pillared hallway, ending in a circular sanctum.
+    const tunnelX = WORLD_WIDTH / 2; // 1024
+    const sanctumY = 1750; // flashlight room center
+    const entranceY = WORLD_HEIGHT / 2 - 100; // top of hub north channel
+
+    // Wide entrance archway
+    this.buffer.clearEllipse(tunnelX, entranceY, 30, 20);
+
+    // Corridor with tapering width — wide at entrance, narrower in middle, opens at sanctum
+    const corridorLen = entranceY - sanctumY;
+    for (let i = 0; i <= corridorLen; i++) {
+      const t = i / corridorLen; // 0 = entrance, 1 = sanctum
+      // Width: wide → narrow → wide (hourglass profile)
+      const narrowPoint = 0.5;
+      const taper = t < narrowPoint
+        ? 1 - (t / narrowPoint) * 0.5
+        : 0.5 + ((t - narrowPoint) / (1 - narrowPoint)) * 0.5;
+      const halfW = 10 + taper * 16;
+      const y = entranceY - i;
+      for (let x = tunnelX - halfW; x <= tunnelX + halfW; x++) {
+        const xi = Math.floor(x);
+        if (xi >= 0 && xi < WORLD_WIDTH && y >= 0 && y < WORLD_HEIGHT) {
+          this.buffer.data[y * WORLD_WIDTH + xi] = 0;
+        }
+      }
+    }
+
+    // Pillar niches along the corridor (symmetrical notches every 30px)
+    const pillarSpacing = 30;
+    const pillarCount = Math.floor(corridorLen / pillarSpacing);
+    for (let p = 1; p < pillarCount; p++) {
+      const py = entranceY - p * pillarSpacing;
+      // Left and right alcoves
+      this.buffer.clearEllipse(tunnelX - 22, py, 8, 6);
+      this.buffer.clearEllipse(tunnelX + 22, py, 8, 6);
+    }
+
+    // Sanctum — large circular room for the flashlight
+    this.buffer.clearEllipse(tunnelX, sanctumY, 50, 45);
+    // Inner ring detail
+    for (let a = 0; a < Math.PI * 2; a += 0.3) {
+      this.buffer.clearEllipse(
+        tunnelX + Math.cos(a) * 38,
+        sanctumY + Math.sin(a) * 34,
+        8, 8,
+      );
+    }
+    // Small altar niche at the back (top of room)
+    this.buffer.clearEllipse(tunnelX, sanctumY - 35, 15, 10);
 
     // Scatter indestructible rocks — placed last so they survive all carving.
     this.placeRocks();
@@ -217,32 +274,84 @@ export class TerrainSystem {
    * a natural cave pocket rather than a geometric shape.
    */
   private carveStartingBlob(cx: number, cy: number): void {
-    const lobes: [number, number, number, number][] = [
-      //  dx    dy   rx   ry
-      [   0,    0,  65,  50],  // main body
-      [ -55,  -20,  45,  32],  // upper-left arm
-      [  50,  -10,  40,  35],  // right lobe
-      [ -30,   45,  38,  28],  // lower-left nook
-      [  30,   40,  42,  30],  // lower-right nook
-      [ -60,   20,  22,  18],  // small left alcove
-      [  15,  -50,  28,  22],  // upper notch
-    ];
-    for (const [dx, dy, rx, ry] of lobes) {
-      this.buffer.clearEllipse(cx + dx, cy + dy, rx, ry);
+    // ── Ancient chasm: symmetric, fractal-edged hub ──────────────
+    // Central void with 4-fold symmetry and nested ring patterns.
+
+    // Core octagon — slightly squashed for character
+    this.buffer.clearEllipse(cx, cy, 120, 110);
+
+    // Inner decorative ring — 8 evenly spaced alcoves at 45° intervals
+    // Creates a gear/cog-like edge to the main chamber
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const r = 95;
+      this.buffer.clearEllipse(
+        cx + Math.cos(a) * r,
+        cy + Math.sin(a) * r,
+        30, 30,
+      );
+      // Smaller satellite alcoves (fractal detail)
+      const r2 = 120;
+      this.buffer.clearEllipse(
+        cx + Math.cos(a) * r2,
+        cy + Math.sin(a) * r2,
+        18, 18,
+      );
+    }
+
+    // 4 large pedestal bays at diagonal corners (45°, 135°, 225°, 315°)
+    const off = 70;
+    for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      // Main bay
+      this.buffer.clearEllipse(cx + sx * off, cy + sy * off, 40, 40);
+      // Bridge connecting bay to core
+      const steps = 8;
+      for (let s = 0; s < steps; s++) {
+        const t = s / steps;
+        this.buffer.clearEllipse(
+          cx + sx * off * t,
+          cy + sy * off * t,
+          28 - t * 8, 28 - t * 8,
+        );
+      }
+    }
+
+    // 4 cardinal channels (N, S, E, W) — narrow passages between the bays
+    // These give the chamber a cross/compass feel
+    const channelLen = 100;
+    const channelW = 14;
+    for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      for (let i = 0; i < channelLen; i++) {
+        this.buffer.clearEllipse(
+          cx + dx * i, cy + dy * i,
+          channelW, channelW,
+        );
+      }
+      // Small room at the end of each cardinal channel
+      this.buffer.clearEllipse(
+        cx + dx * channelLen,
+        cy + dy * channelLen,
+        22, 22,
+      );
+    }
+
+    // Concentric ring detail — a subtle carved ring at r=75
+    // Only carve thin arcs (not a full ring) for a broken/ancient look
+    for (let a = 0; a < Math.PI * 2; a += 0.04) {
+      const skip = Math.sin(a * 4) > 0.3; // skip segments for broken ring effect
+      if (skip) continue;
+      const r = 75;
+      this.buffer.clearEllipse(
+        cx + Math.cos(a) * r,
+        cy + Math.sin(a) * r,
+        4, 4,
+      );
     }
   }
 
-  /** Carve rest areas at regular depth intervals below the starting chamber. */
+  /** Carve rest areas at regular depth intervals away from spawn (no shop at spawn). */
   private carveRestAreas(): void {
-    const spawnX = WORLD_WIDTH / 2;
     const spawnY = WORLD_HEIGHT / 2;
-
-    // Starter rest area — just left of the spawn chamber
-    const starterX = spawnX - 120;
-    this.buffer.clearRoundedRect(starterX, spawnY, 35, 25, 8);
-    // Carve a small connecting tunnel between spawn and the rest area
-    this.buffer.clearEllipse(spawnX - 75, spawnY, 20, 10);
-    this.restAreas.push({ x: starterX, y: spawnY });
 
     const spacing = 800;
     const count = 4;
@@ -286,6 +395,7 @@ export class TerrainSystem {
       }
     }
   }
+
 
   damage(x: number, y: number, amount: number = 1): boolean {
     const destroyed = this.buffer.damage(x, y, amount);
@@ -356,6 +466,11 @@ export class TerrainSystem {
     const pixels = this.imageData.data;
     const viewX = Math.floor(cameraX);
     const viewY = Math.floor(cameraY);
+
+    // Skip the full pixel loop if nothing changed
+    if (!this.dirty && viewX === this.lastViewX && viewY === this.lastViewY) return;
+    this.lastViewX = viewX;
+    this.lastViewY = viewY;
 
     for (let sy = 0; sy < GAME_HEIGHT; sy++) {
       const worldY = viewY + sy;

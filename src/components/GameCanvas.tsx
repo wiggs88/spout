@@ -20,7 +20,9 @@ interface GameState {
   nearShop: boolean;
   shopMarkerPos: { x: number; y: number } | null;
   shopScreenPos: { x: number; y: number } | null;
+  hubMarkerPos: { x: number; y: number } | null;
   oreCollects: { tier: number; screenX: number; screenY: number }[];
+  nearPedestal: { shape: string; color: number; screenX: number; screenY: number; placed: boolean } | null;
 }
 
 interface CanvasBounds {
@@ -51,7 +53,9 @@ export function GameCanvas() {
     nearShop: false,
     shopMarkerPos: null,
     shopScreenPos: null,
+    hubMarkerPos: null,
     oreCollects: [],
+    nearPedestal: null,
   });
   const [canvasBounds, setCanvasBounds] = useState<CanvasBounds | null>(null);
 
@@ -138,7 +142,9 @@ export function GameCanvas() {
         nearShop={state.nearShop}
         shopMarkerPos={state.shopMarkerPos}
         shopScreenPos={state.shopScreenPos}
+        hubMarkerPos={state.hubMarkerPos}
         oreCollects={state.oreCollects}
+        nearPedestal={state.nearPedestal}
         canvasBounds={canvasBounds}
         shopActions={shopActions()}
       />

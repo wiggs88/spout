@@ -51,7 +51,9 @@ interface HUDProps {
   nearShop: boolean;
   shopMarkerPos: { x: number; y: number } | null;
   shopScreenPos: { x: number; y: number } | null;
+  hubMarkerPos: { x: number; y: number } | null;
   oreCollects: { tier: number; screenX: number; screenY: number }[];
+  nearPedestal: { shape: string; color: number; screenX: number; screenY: number; placed: boolean } | null;
   canvasBounds: CanvasBounds | null;
   shopActions: ShopActions;
 }
@@ -242,16 +244,44 @@ const ITEM_BAR_ICONS: Record<string, string> = {
   hook: '⚓', aura: '◎', rocket: '↑', carve: '⛏', dynamo: 'ϟ', flashlight: '◈',
 };
 
-function ItemBar({ equipped, toggles, cooldowns, bounds }: {
+function ItemBar({ equipped, toggles, cooldowns, bounds, shopOpen }: {
   equipped: (string | null)[];
   toggles: Record<string, boolean>;
   cooldowns: boolean[];
   bounds: CanvasBounds;
+  shopOpen: boolean;
 }) {
+  // Track which items are "new" (just equipped after closing shop)
+  const prevEquippedRef = useRef<(string | null)[]>([null, null, null]);
+  const wasShopOpenRef = useRef(false);
+  const [newSlots, setNewSlots] = useState<boolean[]>([false, false, false]);
+
+  useEffect(() => {
+    // Detect shop closing: was open, now closed
+    if (wasShopOpenRef.current && !shopOpen) {
+      const prev = prevEquippedRef.current;
+      const fresh = equipped.map((id, i) => id !== null && id !== prev[i]);
+      if (fresh.some(Boolean)) {
+        setNewSlots(fresh);
+        // Clear flicker after animation
+        const timer = setTimeout(() => setNewSlots([false, false, false]), 600);
+        return () => clearTimeout(timer);
+      }
+    }
+    wasShopOpenRef.current = shopOpen;
+    prevEquippedRef.current = [...equipped];
+  }, [equipped, shopOpen]);
+
+  // Only show slots that have items
+  const filledSlots = equipped
+    .map((itemId, i) => ({ itemId, i }))
+    .filter(s => s.itemId !== null);
+
+  if (filledSlots.length === 0 || shopOpen) return null;
+
   return (
     <div style={{
       position: 'absolute',
-      bottom: bounds.top + (bounds.height - bounds.height) + 4,
       top: bounds.top + bounds.height - 30,
       left: bounds.left + bounds.width / 2,
       transform: 'translateX(-50%)',
@@ -260,7 +290,7 @@ function ItemBar({ equipped, toggles, cooldowns, bounds }: {
       fontFamily: 'monospace',
       pointerEvents: 'none',
     }}>
-      {equipped.map((itemId, i) => {
+      {filledSlots.map(({ itemId, i }) => {
         const def = itemId ? getItemDef(itemId) : null;
         const icon = def ? (ITEM_BAR_ICONS[def.id] ?? '?') : null;
         const onCooldown = cooldowns[i] ?? false;
@@ -268,8 +298,9 @@ function ItemBar({ equipped, toggles, cooldowns, bounds }: {
         const bright = isActive ? 1 : 0.6;
         const borderColor = isActive ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)';
         const bg = isActive ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.45)';
+        const isNew = newSlots[i];
         return (
-          <div key={i} style={{
+          <div key={`${i}-${itemId}`} style={{
             display: 'flex',
             alignItems: 'center',
             gap: 0,
@@ -278,6 +309,7 @@ function ItemBar({ equipped, toggles, cooldowns, bounds }: {
             borderRadius: 5,
             background: bg,
             padding: '2px 2px',
+            animation: isNew ? 'oreFlickerIn 0.6s ease-out' : undefined,
           }}>
             {/* Slot number */}
             <span style={{
@@ -296,8 +328,8 @@ function ItemBar({ equipped, toggles, cooldowns, bounds }: {
               width: 20,
               height: 20,
               borderRadius: 4,
-              background: itemId ? 'rgba(255,255,255,0.08)' : 'transparent',
-              border: itemId ? '1px solid rgba(255,255,255,0.1)' : '1px solid rgba(255,255,255,0.05)',
+              background: 'rgba(255,255,255,0.08)',
+              border: '1px solid rgba(255,255,255,0.1)',
               fontSize: '12px',
               color: '#888',
             }}>
@@ -366,6 +398,43 @@ function ShopDirectionMarker({ pos, bounds }: { pos: { x: number; y: number }; b
       whiteSpace: 'nowrap',
     }}>
       SHOP
+    </div>
+  );
+}
+
+function HubDirectionMarker({ pos, bounds }: { pos: { x: number; y: number }; bounds: CanvasBounds }) {
+  const [showTime] = useState(() => Date.now());
+  const [flickerTick, setFlickerTick] = useState(0);
+
+  useEffect(() => {
+    const age = Date.now() - showTime;
+    if (age >= 2000) return;
+    const id = setInterval(() => setFlickerTick(t => t + 1), 50);
+    const timeout = setTimeout(() => clearInterval(id), 2000 - age);
+    return () => { clearInterval(id); clearTimeout(timeout); };
+  }, [showTime]);
+
+  const age = Date.now() - showTime;
+  if (age < 2000 && flickerTick % 2 === 1) return null;
+
+  const left = bounds.left + pos.x * bounds.width;
+  const top = bounds.top + pos.y * bounds.height;
+
+  return (
+    <div style={{
+      ...frameStyle,
+      position: 'absolute',
+      left,
+      top,
+      transform: 'translate(-50%, -50%)',
+      fontSize: '8px',
+      color: '#aaa',
+      padding: '1px 5px',
+      border: '1px solid #666',
+      opacity: 0.75,
+      whiteSpace: 'nowrap',
+    }}>
+      HUB
     </div>
   );
 }
@@ -443,7 +512,7 @@ function OreCollectPopups({ collects, bounds }: {
 export function HUD({
   score, gameOver, gameStarted, health, energy, ores,
   equipped, ownedItems, toggles, slotCooldowns,
-  shopOpen, nearShop, shopMarkerPos, shopScreenPos, oreCollects, canvasBounds, shopActions,
+  shopOpen, nearShop, shopMarkerPos, shopScreenPos, hubMarkerPos, oreCollects, nearPedestal, canvasBounds, shopActions,
 }: HUDProps) {
   const [threshold, setThreshold] = useState(0);
 
@@ -475,14 +544,17 @@ export function HUD({
       `}</style>
       {gameStarted && canvasBounds && <OreCollectPopups collects={oreCollects} bounds={canvasBounds} />}
       {gameStarted && canvasBounds && <OreCounter ores={ores} bounds={canvasBounds} />}
-      {gameStarted && !gameOver && !shopOpen && canvasBounds && (
-        <ItemBar equipped={equipped} toggles={toggles} cooldowns={slotCooldowns} bounds={canvasBounds} />
+      {gameStarted && !gameOver && canvasBounds && (
+        <ItemBar equipped={equipped} toggles={toggles} cooldowns={slotCooldowns} bounds={canvasBounds} shopOpen={shopOpen} />
       )}
       {gameStarted && !gameOver && nearShop && !shopOpen && shopScreenPos && canvasBounds && (
         <ShopIndicator pos={shopScreenPos} bounds={canvasBounds} />
       )}
       {gameStarted && !gameOver && !shopOpen && shopMarkerPos && canvasBounds && (
         <ShopDirectionMarker pos={shopMarkerPos} bounds={canvasBounds} />
+      )}
+      {gameStarted && !gameOver && !shopOpen && hubMarkerPos && canvasBounds && (
+        <HubDirectionMarker pos={hubMarkerPos} bounds={canvasBounds} />
       )}
 
       {gameStarted && !gameOver && canvasBounds && (
