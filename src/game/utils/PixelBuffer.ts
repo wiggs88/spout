@@ -50,6 +50,23 @@ export class PixelBuffer {
     this.fillRect(x, y, w, h, 0);
   }
 
+  fillEllipse(cx: number, cy: number, rx: number, ry: number, value: number): void {
+    const x0 = Math.max(0, Math.floor(cx - rx));
+    const x1 = Math.min(this.width - 1, Math.ceil(cx + rx));
+    const y0 = Math.max(0, Math.floor(cy - ry));
+    const y1 = Math.min(this.height - 1, Math.ceil(cy + ry));
+    for (let py = y0; py <= y1; py++) {
+      const dy = (py - cy) / ry;
+      const rowOffset = py * this.width;
+      for (let px = x0; px <= x1; px++) {
+        const dx = (px - cx) / rx;
+        if (dx * dx + dy * dy <= 1) {
+          this.data[rowOffset + px] = value;
+        }
+      }
+    }
+  }
+
   clearEllipse(cx: number, cy: number, rx: number, ry: number): void {
     const x0 = Math.max(0, Math.floor(cx - rx));
     const x1 = Math.min(this.width - 1, Math.ceil(cx + rx));

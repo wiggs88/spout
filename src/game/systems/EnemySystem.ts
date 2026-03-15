@@ -1,6 +1,7 @@
 import { ShipState, WORLD_WIDTH, WORLD_HEIGHT, GAME_WIDTH, GAME_HEIGHT } from '../../types/game';
 import { TerrainSystem } from './TerrainSystem';
 import { ParticleSystem } from './ParticleSystem';
+import { ARTIFACT_HOMES, ARTIFACT_ZONE_EXCLUSION } from './ArtifactSystem';
 
 // ── Constants ────────────────────────────────────────────────────
 const LEECH_COUNT = 25;
@@ -277,6 +278,15 @@ export class EnemySystem {
       const dsy = y - spawnY;
       if (dsx * dsx + dsy * dsy < MIN_DIST_FROM_SPAWN * MIN_DIST_FROM_SPAWN) continue;
 
+      // Keep enemies out of artifact fractal zones
+      const _ar2 = ARTIFACT_ZONE_EXCLUSION * ARTIFACT_ZONE_EXCLUSION;
+      let _inZone = false;
+      for (const _h of ARTIFACT_HOMES) {
+        const _dax = x - _h.x; const _day = y - _h.y;
+        if (_dax * _dax + _day * _day < _ar2) { _inZone = true; break; }
+      }
+      if (_inZone) continue;
+
       // Min distance from rest areas
       let tooCloseToRest = false;
       for (const area of restAreas) {
@@ -413,6 +423,15 @@ export class EnemySystem {
       const dsx = x - spawnX;
       const dsy = y - spawnY;
       if (dsx * dsx + dsy * dsy < MIN_DIST_FROM_SPAWN * MIN_DIST_FROM_SPAWN) continue;
+
+      // Keep enemies out of artifact fractal zones
+      const _ar2 = ARTIFACT_ZONE_EXCLUSION * ARTIFACT_ZONE_EXCLUSION;
+      let _inZone = false;
+      for (const _h of ARTIFACT_HOMES) {
+        const _dax = x - _h.x; const _day = y - _h.y;
+        if (_dax * _dax + _day * _day < _ar2) { _inZone = true; break; }
+      }
+      if (_inZone) continue;
 
       // Min distance from rest areas
       let tooCloseToRest = false;

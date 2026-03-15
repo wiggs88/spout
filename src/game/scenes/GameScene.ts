@@ -60,6 +60,8 @@ export class GameScene extends Phaser.Scene {
     p: Phaser.Input.Keyboard.Key;
     l: Phaser.Input.Keyboard.Key;
     k: Phaser.Input.Keyboard.Key;
+    m: Phaser.Input.Keyboard.Key;
+    j: Phaser.Input.Keyboard.Key;
   };
 
   private score: number = 0;
@@ -71,6 +73,7 @@ export class GameScene extends Phaser.Scene {
   private shopOpen: boolean = false;
   private nearShop: boolean = false;
   private debugGodMode: boolean = false;
+  private debugArtifactIndex: number = 0;
 
   // World pickups
   private flashlightPickedUp: boolean = false;
@@ -154,6 +157,8 @@ export class GameScene extends Phaser.Scene {
       p: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.P),
       l: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.L),
       k: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.K),
+      m: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.M),
+      j: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.J),
     };
 
     // Prevent keys from reaching browser
@@ -297,6 +302,26 @@ export class GameScene extends Phaser.Scene {
       this.notifyState();
     }
 
+    // Debug: M spawns first idle artifact near the ship for easy testing
+    if (Phaser.Input.Keyboard.JustDown(this.keys.m)) {
+      const idle = this.artifactSystem.artifacts.find(a => a.state === 'idle');
+      if (idle) {
+        idle.x = this.ship.x + 30;
+        idle.y = this.ship.y + 30;
+      }
+    }
+
+    // Debug: J teleports to next artifact pickup spot (cycles through all 4)
+    if (Phaser.Input.Keyboard.JustDown(this.keys.j)) {
+      const arts = this.artifactSystem.artifacts;
+      const art = arts[this.debugArtifactIndex % arts.length];
+      this.ship.x = art.homeX;
+      this.ship.y = art.homeY;
+      this.ship.vx = 0;
+      this.ship.vy = 0;
+      this.debugArtifactIndex = (this.debugArtifactIndex + 1) % arts.length;
+    }
+
     // Debug: K toggles god mode (invincible + super carve)
     if (Phaser.Input.Keyboard.JustDown(this.keys.k)) {
       this.debugGodMode = !this.debugGodMode;
@@ -377,7 +402,12 @@ export class GameScene extends Phaser.Scene {
       }
 
       // Artifact collection / rope physics / placement
-      this.artifactSystem.update(this.ship);
+      this.artifactSystem.update(this.ship, time);
+
+      // Artifact shake events (collect / place)
+      for (const shake of this.artifactSystem.drainShakeEvents()) {
+        this.cameras.main.shake(shake.duration, shake.intensity);
+      }
 
       // Check if near a rest area
       this.nearShop = this.terrain.isNearRestArea(this.ship.x, this.ship.y);

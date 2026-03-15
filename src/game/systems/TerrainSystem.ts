@@ -8,6 +8,9 @@ import { ArtifactSystem } from './ArtifactSystem';
 // Rest area detection radius (ship must be within this distance of center)
 const REST_AREA_DETECT_RADIUS = 30;
 
+// Artifact fractal zone — radius within which walls render lighter
+const ARTIFACT_ZONE_RADIUS = 100;
+
 export class TerrainSystem {
   buffer: PixelBuffer;
   private imageData: ImageData;
@@ -22,6 +25,9 @@ export class TerrainSystem {
 
   // Rest area (shop) locations
   readonly restAreas: { x: number; y: number }[] = [];
+
+  // Artifact fractal zone centers (lighter-wall tinting)
+  private artifactZones: { x: number; y: number }[] = [];
 
 
   constructor() {
@@ -81,9 +87,6 @@ export class TerrainSystem {
     // Carve rest areas (shop locations) at depth intervals
     this.carveRestAreas();
 
-    // Carve artifact corner rooms and expanded center hub
-    ArtifactSystem.carveTerrain(this.buffer);
-
     // ── Grand corridor to flashlight chamber ─────────────────────
     // Wide entrance tapering into a pillared hallway, ending in a circular sanctum.
     const tunnelX = WORLD_WIDTH / 2; // 1024
@@ -135,8 +138,13 @@ export class TerrainSystem {
     // Small altar niche at the back (top of room)
     this.buffer.clearEllipse(tunnelX, sanctumY - 35, 15, 10);
 
-    // Scatter indestructible rocks — placed last so they survive all carving.
+    // Scatter indestructible rocks first, then carve artifact rooms so the
+    // fractal carving (clearEllipse → hp=0) overwrites any rocks inside zones.
     this.placeRocks();
+
+    // Carve artifact corner rooms and expanded center hub; store zones for lighter-wall tinting.
+    // Must run AFTER placeRocks so fractal carvings clear any rocks placed inside them.
+    this.artifactZones = ArtifactSystem.carveTerrain(this.buffer);
 
     this.generatedUpTo = 0;
     this.dirty = true;
@@ -500,6 +508,15 @@ export class TerrainSystem {
             b = Math.floor(b * (1 - tint * 0.3));
           }
 
+          // Lighten walls inside artifact fractal zones so they read as distinct
+          const bright = this.getArtifactZoneBright(worldX, worldY);
+          if (bright > 0) {
+            const boost = Math.floor(bright * 55);
+            r = Math.min(255, r + boost);
+            g = Math.min(255, g + boost);
+            b = Math.min(255, b + boost);
+          }
+
           pixels[idx] = r;
           pixels[idx + 1] = g;
           pixels[idx + 2] = b;
@@ -517,6 +534,18 @@ export class TerrainSystem {
     phaserTexture.context.drawImage(this.canvas, 0, 0);
     phaserTexture.refresh();
     this.dirty = false;
+  }
+
+  /** Returns 0-1 brightness boost for walls inside artifact fractal zones. */
+  private getArtifactZoneBright(x: number, y: number): number {
+    const R2 = ARTIFACT_ZONE_RADIUS * ARTIFACT_ZONE_RADIUS;
+    for (const zone of this.artifactZones) {
+      const dx = x - zone.x;
+      const dy = y - zone.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < R2) return 1 - Math.sqrt(d2) / ARTIFACT_ZONE_RADIUS;
+    }
+    return 0;
   }
 
   /** Returns 0-1 tint strength for walls near rest areas (for green tinting). */

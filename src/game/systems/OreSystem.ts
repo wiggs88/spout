@@ -4,6 +4,7 @@ import {
   ORE_COUNTS, ORE_COLLECT_RADIUS, ORE_MIN_DISTANCES, ORE_COLORS,
 } from '../../types/game';
 import { TerrainSystem } from './TerrainSystem';
+import { ARTIFACT_HOMES, ARTIFACT_ZONE_EXCLUSION } from './ArtifactSystem';
 
 const FLASH_SPEED = 0.005; // tier 4 pulse rate
 
@@ -38,6 +39,15 @@ export class OreSystem {
         const dx = x - spawnX;
         const dy = y - spawnY;
         if (dx * dx + dy * dy < minDist2) continue;
+
+        // Keep ores out of artifact fractal zones
+        const ar2 = ARTIFACT_ZONE_EXCLUSION * ARTIFACT_ZONE_EXCLUSION;
+        let inZone = false;
+        for (const h of ARTIFACT_HOMES) {
+          const dax = x - h.x; const day = y - h.y;
+          if (dax * dax + day * day < ar2) { inZone = true; break; }
+        }
+        if (inZone) continue;
 
         // Must be inside solid terrain
         if (!terrain.isSolid(x, y)) continue;
@@ -132,81 +142,79 @@ export class OreSystem {
       graphics.rotateCanvas(ore.rotation);
 
       if (ore.tier === 1) {
-        this.drawSquareCluster(graphics, 0, 0, color, s);
+        this.drawSquareOre(graphics, color, s);
       } else if (ore.tier === 2) {
-        this.drawTriangleCluster(graphics, 0, 0, color, s);
+        this.drawTriangleOre(graphics, color, s);
       } else if (ore.tier === 3) {
         const flash = Math.sin(time * FLASH_SPEED) * 0.5 + 0.5;
-        this.drawRhombusCluster(graphics, 0, 0, color, 0.55 + flash * 0.45, s);
+        this.drawRhombusOre(graphics, color, 0.6 + flash * 0.4, s);
       }
 
       graphics.restore();
     }
   }
 
-  // Tier 1 — cluster of squares
-  private drawSquareCluster(g: Phaser.GameObjects.Graphics, cx: number, cy: number, color: number, s: number): void {
-    // Black outlines (1px larger on each side)
-    const o = 1;
-    g.fillStyle(0x000000, 0.9);
-    g.fillRect(cx - 5 * s - o, cy - 5 * s - o, 6 * s + o * 2, 6 * s + o * 2);
-    g.fillRect(cx + 2 * s - o, cy - 3 * s - o, 4 * s + o * 2, 4 * s + o * 2);
-    g.fillRect(cx - 3 * s - o, cy + 2 * s - o, 4 * s + o * 2, 4 * s + o * 2);
-    g.fillRect(cx + 3 * s - o, cy + 3 * s - o, 3 * s + o * 2, 3 * s + o * 2);
-    g.fillRect(cx - 6 * s - o, cy - 2 * s - o, 2 * s + o * 2, 2 * s + o * 2);
-    // Colored fill
-    g.fillStyle(color, 0.85);
-    g.fillRect(cx - 5 * s, cy - 5 * s, 6 * s, 6 * s);
-    g.fillRect(cx + 2 * s, cy - 3 * s, 4 * s, 4 * s);
-    g.fillRect(cx - 3 * s, cy + 2 * s, 4 * s, 4 * s);
-    g.fillStyle(color, 0.5);
-    g.fillRect(cx + 3 * s, cy + 3 * s, 3 * s, 3 * s);
-    g.fillRect(cx - 6 * s, cy - 2 * s, 2 * s, 2 * s);
-  }
+  // Wobbly black outline — expands each perimeter point outward from centroid
+  // by (base + sine harmonics), producing an organic halo.
+  private drawWobblyOutline(g: Phaser.GameObjects.Graphics, pts: [number, number][], base: number, amp: number, freq: number): void {
+    const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
+    const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+    const STEPS = 10;
+    const outline: [number, number][] = [];
 
-  // Tier 2 — cluster of triangles
-  private drawTriangleCluster(g: Phaser.GameObjects.Graphics, cx: number, cy: number, color: number, s: number): void {
-    g.lineStyle(1, 0x000000, 0.9);
-    g.fillStyle(color, 0.85);
-    this.drawTri(g, cx, cy - 2 * s, 10 * s, true);
-    g.fillStyle(color, 0.7);
-    this.drawTri(g, cx + 6 * s, cy + 2 * s, 6 * s, true);
-    g.fillStyle(color, 0.5);
-    this.drawTri(g, cx - 5 * s, cy + 3 * s, 5 * s, true);
-  }
+    for (let i = 0; i < pts.length; i++) {
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % pts.length];
+      for (let k = 0; k < STEPS; k++) {
+        const t = k / STEPS;
+        const x = p1[0] + (p2[0] - p1[0]) * t;
+        const y = p1[1] + (p2[1] - p1[1]) * t;
+        const dx = x - cx; const dy = y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const angle = Math.atan2(dy, dx);
+        const w = base
+          + Math.sin(angle * freq) * amp
+          + Math.sin(angle * freq * 1.7 + 0.9) * amp * 0.6
+          + Math.sin(angle * freq * 2.9 + 1.4) * amp * 0.3;
+        outline.push([x + (dx / dist) * w, y + (dy / dist) * w]);
+      }
+    }
 
-  private drawTri(g: Phaser.GameObjects.Graphics, cx: number, cy: number, h: number, outline: boolean = false): void {
-    const hh = h / 2;
-    const hw = h * 0.58;
+    g.fillStyle(0x000000, 1);
     g.beginPath();
-    g.moveTo(cx, cy - hh);
-    g.lineTo(cx + hw, cy + hh);
-    g.lineTo(cx - hw, cy + hh);
+    g.moveTo(outline[0][0], outline[0][1]);
+    for (let i = 1; i < outline.length; i++) g.lineTo(outline[i][0], outline[i][1]);
     g.closePath();
-    if (outline) g.strokePath();
     g.fillPath();
   }
 
-  // Tier 4 — cluster of rhombuses (pulsing)
-  private drawRhombusCluster(g: Phaser.GameObjects.Graphics, cx: number, cy: number, color: number, alpha: number, s: number): void {
-    g.lineStyle(1, 0x000000, 0.9);
+  // Tier 1 — single square with wobbly outline
+  private drawSquareOre(g: Phaser.GameObjects.Graphics, color: number, s: number): void {
+    const h = 5 * s;
+    this.drawWobblyOutline(g, [[-h, -h], [h, -h], [h, h], [-h, h]], 2.5, 1.8, 5);
+    g.fillStyle(color, 0.92);
+    g.fillRect(-h, -h, h * 2, h * 2);
+  }
+
+  // Tier 2 — single triangle with wobbly outline
+  private drawTriangleOre(g: Phaser.GameObjects.Graphics, color: number, s: number): void {
+    const h = 5 * s;
+    const hw = h * 0.87;
+    const pts: [number, number][] = [[0, -h], [hw, h * 0.5], [-hw, h * 0.5]];
+    this.drawWobblyOutline(g, pts, 2.5, 1.8, 5);
+    g.fillStyle(color, 0.92);
+    g.beginPath();
+    g.moveTo(0, -h); g.lineTo(hw, h * 0.5); g.lineTo(-hw, h * 0.5);
+    g.closePath(); g.fillPath();
+  }
+
+  // Tier 3 — single rhombus with wobbly outline (pulsing alpha)
+  private drawRhombusOre(g: Phaser.GameObjects.Graphics, color: number, alpha: number, s: number): void {
+    const h = 6 * s;
+    this.drawWobblyOutline(g, [[0, -h], [h, 0], [0, h], [-h, 0]], 2.5, 1.8, 5);
     g.fillStyle(color, alpha);
-    this.drawRhombus(g, cx, cy, 10 * s, true);
-    g.fillStyle(color, alpha * 0.7);
-    this.drawRhombus(g, cx + 7 * s, cy - 1 * s, 6 * s, true);
-    g.fillStyle(color, alpha * 0.5);
-    this.drawRhombus(g, cx - 5 * s, cy + 4 * s, 5 * s, true);
-  }
-
-  private drawRhombus(g: Phaser.GameObjects.Graphics, cx: number, cy: number, size: number, outline: boolean = false): void {
-    const half = size / 2;
     g.beginPath();
-    g.moveTo(cx, cy - half);
-    g.lineTo(cx + half, cy);
-    g.lineTo(cx, cy + half);
-    g.lineTo(cx - half, cy);
-    g.closePath();
-    if (outline) g.strokePath();
-    g.fillPath();
+    g.moveTo(0, -h); g.lineTo(h, 0); g.lineTo(0, h); g.lineTo(-h, 0);
+    g.closePath(); g.fillPath();
   }
 }

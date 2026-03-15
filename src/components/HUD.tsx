@@ -587,8 +587,26 @@ export function HUD({
         pointerEvents: 'auto',
         userSelect: 'none',
       }}>
-        <div style={{ marginBottom: 3 }}>
-          DEBUG · WALL THRESHOLD: {threshold}
+        <div style={{ marginBottom: 6, color: '#555', borderBottom: '1px solid #333', paddingBottom: 4 }}>
+          DEBUG KEYS
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 6 }}>
+          {[
+            ['P', '+10 ore each'],
+            ['L', 'Lvl 3 flashlight'],
+            ['K', 'God mode (invincible + carve)'],
+            ['M', 'Spawn artifact near ship'],
+            ['J', 'Teleport to next artifact'],
+            ['R', 'Restart (game over only)'],
+          ].map(([key, desc]) => (
+            <div key={key} style={{ display: 'flex', gap: 6 }}>
+              <span style={{ color: '#666', width: 14, textAlign: 'right' }}>{key}</span>
+              <span style={{ color: '#444' }}>{desc}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginBottom: 3, color: '#555' }}>
+          WALL THRESHOLD: {threshold}
         </div>
         <input
           type="range"

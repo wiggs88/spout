@@ -1,4 +1,4 @@
-import { ShipState, WORLD_WIDTH, WORLD_HEIGHT, GAME_WIDTH, GAME_HEIGHT } from '../../types/game';
+import { ShipState, WORLD_WIDTH, WORLD_HEIGHT, GAME_WIDTH, GAME_HEIGHT, TERRAIN_MAX_HP } from '../../types/game';
 import { PixelBuffer } from '../utils/PixelBuffer';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -22,6 +22,7 @@ interface Artifact {
   state: 'idle' | 'carried' | 'placed';
   color: number;
   rope: RopePoint[];
+  placedTime: number; // Phaser time when placed (0 = not yet placed)
 }
 
 // ── Layout constants ───────────────────────────────────────────────
@@ -30,6 +31,15 @@ const HUB_Y = WORLD_HEIGHT / 2;  // 2048
 const PEDESTAL_OFFSET = 70;
 const CENTER_CIRCLE_RADIUS = 25;
 const CORNER_ROOM_SIZE = 50;
+
+// ── Artifact zone exclusion (exported for ore/enemy spawn exclusion) ──
+export const ARTIFACT_ZONE_EXCLUSION = 225; // px radius kept clear of enemies/ores/rocks
+export const ARTIFACT_HOMES: { x: number; y: number }[] = [
+  { x: 200,  y: 200  },
+  { x: 1848, y: 200  },
+  { x: 200,  y: 3896 },
+  { x: 1848, y: 3896 },
+];
 
 // ── Artifact definitions ───────────────────────────────────────────
 const ARTIFACT_DEFS: {
@@ -62,6 +72,7 @@ export class ArtifactSystem {
   readonly artifacts: Artifact[] = [];
   private _allPlaced = false;
   private _playerInCircle = false;
+  private _shakeEvents: { duration: number; intensity: number }[] = [];
 
   // Intro animation: null = normal rendering, otherwise controls element visibility/intensity
   introOverride: { ring: number; lines: number; towers: number; glow: number } | null = null;
@@ -79,6 +90,7 @@ export class ArtifactSystem {
         state: 'idle',
         color: def.color,
         rope: [],
+        placedTime: 0,
       });
     }
   }
@@ -125,8 +137,15 @@ export class ArtifactSystem {
     return { x: cx / GAME_WIDTH, y: cy / GAME_HEIGHT };
   }
 
+  /** Drain pending camera shake events (called by GameScene each frame). */
+  drainShakeEvents(): { duration: number; intensity: number }[] {
+    const e = this._shakeEvents;
+    this._shakeEvents = [];
+    return e;
+  }
+
   // ── Update ─────────────────────────────────────────────────────
-  update(ship: ShipState): void {
+  update(ship: ShipState, time: number): void {
     // Try to pick up any idle artifact near the ship or near the tail of carried chain
     const carried = this.artifacts.filter(a => a.state === 'carried');
     const anchorX = carried.length > 0
@@ -144,6 +163,7 @@ export class ArtifactSystem {
         art.state = 'carried';
         this.initRope(art, ship, carried);
         carried.push(art);
+        this._shakeEvents.push({ duration: 180, intensity: 0.004 });
         break;
       }
       // Also check near ship directly
@@ -153,6 +173,7 @@ export class ArtifactSystem {
         art.state = 'carried';
         this.initRope(art, ship, carried);
         carried.push(art);
+        this._shakeEvents.push({ duration: 180, intensity: 0.004 });
         break;
       }
     }
@@ -174,7 +195,9 @@ export class ArtifactSystem {
         art.x = art.pedestalX;
         art.y = art.pedestalY;
         art.rope = [];
+        art.placedTime = time;
         this._allPlaced = this.artifacts.every(a => a.state === 'placed');
+        this._shakeEvents.push({ duration: 350, intensity: 0.006 });
       }
     }
 
@@ -266,14 +289,14 @@ export class ArtifactSystem {
     const glowPulse = Math.sin(time * 0.003) * 0.15 + 0.85;
 
     // Connection lines (behind everything)
-    this.renderConnectionLines(graphics, camX, camY, pulse);
+    this.renderConnectionLines(graphics, camX, camY, pulse, time);
 
     // Center circle
     this.renderCenterCircle(graphics, camX, camY, time);
 
     // Pedestals
     for (const art of this.artifacts) {
-      this.renderPedestal(graphics, art, camX, camY, pulse);
+      this.renderPedestal(graphics, art, camX, camY, pulse, time);
     }
 
     // Idle artifacts (at corners, glowing) — skip during intro
@@ -304,7 +327,7 @@ export class ArtifactSystem {
 
   private renderPedestal(
     g: Phaser.GameObjects.Graphics, art: Artifact,
-    camX: number, camY: number, pulse: number,
+    camX: number, camY: number, pulse: number, time: number,
   ): void {
     const sx = art.pedestalX - camX;
     const sy = art.pedestalY - camY;
@@ -328,27 +351,111 @@ export class ArtifactSystem {
     }
 
     const placed = art.state === 'placed';
-    const color = placed ? art.color : 0x888888;
-    const alpha = placed ? pulse : 0.6;
     const h = PEDESTAL_HALF;
-
-    // Square pedestal box
-    g.lineStyle(1, color, alpha);
-    g.strokeRect(sx - h, sy - h, h * 2, h * 2);
-
-    // Shape centered inside
     const shapeSize = 6;
-    if (placed) {
+
+    if (placed && art.placedTime > 0) {
+      const elapsed = time - art.placedTime;
+
+      // ── Placement animation ───────────────────────────────────
+      // Phase 1 (0–700ms):    artifact vibrates/fizzles into spot
+      // Phase 2 (300–1200ms): shape flickers in (slow, heavy flicker)
+      // Phase 3 (1000–1800ms): box outline flickers in
+      // Phase 4 (1800ms+):    normal pulsing placed state
+      const ANIM_TOTAL = 1800;
+
+      if (elapsed < ANIM_TOTAL) {
+        // ── Phase 1: vibrate + fizzle (0–700ms) ────────────────
+        if (elapsed < 700) {
+          const vibrateT = 1 - elapsed / 700; // 1→0
+          const vibStrength = vibrateT * vibrateT * 12; // quadratic ease-out
+
+          // Fizzle sparks — scattered colored pixels radiating outward
+          const sparkCount = Math.floor(vibrateT * 8);
+          for (let i = 0; i < sparkCount; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = (1 - Math.random() * vibrateT) * 14;
+            const sparkAlpha = Math.random() * vibrateT * 0.8;
+            g.fillStyle(art.color, sparkAlpha);
+            g.fillRect(
+              Math.floor(sx + Math.cos(angle) * dist),
+              Math.floor(sy + Math.sin(angle) * dist),
+              1, 1,
+            );
+          }
+
+          // Shape renders at jittering offset, fading in from chaos
+          if (Math.random() < 0.6 + elapsed / 700 * 0.4) {
+            const ox = (Math.random() - 0.5) * 2 * vibStrength;
+            const oy = (Math.random() - 0.5) * 2 * vibStrength;
+            const flickerAlpha = (0.3 + Math.random() * 0.7) * (elapsed / 700);
+            g.fillStyle(art.color, flickerAlpha);
+            this.drawShape(g, sx + ox, sy + oy, art.shape, shapeSize, true);
+          }
+
+          // Dim box during vibrate
+          g.lineStyle(1, 0x888888, 0.4 + vibrateT * 0.2);
+          g.strokeRect(sx - h, sy - h, h * 2, h * 2);
+          return;
+        }
+
+        // ── Phase 2: shape flickers in (300–1200ms) ────────────
+        if (elapsed < 1200) {
+          const p = (elapsed - 300) / 900;
+          // Aggressive flicker — low base probability, spiky
+          const on = Math.random() < p * p * 1.5;
+          if (on) {
+            const flickAlpha = (0.4 + Math.random() * 0.6) * Math.min(1, p * 1.3);
+            g.fillStyle(art.color, flickAlpha * pulse);
+            this.drawShape(g, sx, sy, art.shape, shapeSize, true);
+          }
+        } else {
+          // Shape fully settled
+          g.fillStyle(art.color, pulse);
+          this.drawShape(g, sx, sy, art.shape, shapeSize, true);
+        }
+
+        // ── Phase 3: box walls flicker in one at a time (1000–1800ms) ─
+        // Each wall gets 200ms: top → right → bottom → left
+        const walls = [
+          // [startMs, x1, y1, x2, y2]
+          [1000, sx - h, sy - h, sx + h, sy - h], // top
+          [1200, sx + h, sy - h, sx + h, sy + h], // right
+          [1400, sx + h, sy + h, sx - h, sy + h], // bottom
+          [1600, sx - h, sy + h, sx - h, sy - h], // left
+        ] as const;
+
+        for (const [start, x1, y1, x2, y2] of walls) {
+          if (elapsed < start) {
+            // Not yet — draw dim placeholder
+            g.lineStyle(1, 0x555555, 0.3);
+          } else {
+            const wp = Math.min(1, (elapsed - start) / 200);
+            const on = Math.random() < wp * wp * 1.8;
+            g.lineStyle(1, on ? art.color : 0x555555, on ? Math.min(1, wp * 1.3) : 0.3);
+          }
+          g.beginPath();
+          g.moveTo(x1, y1);
+          g.lineTo(x2, y2);
+          g.strokePath();
+        }
+        return;
+      }
+
+      // ── Normal placed state (pulsing) ────────────────────────
+      g.lineStyle(1, art.color, pulse);
+      g.strokeRect(sx - h, sy - h, h * 2, h * 2);
       g.fillStyle(art.color, pulse);
       this.drawShape(g, sx, sy, art.shape, shapeSize, true);
-      // Corner glow dots
       g.fillStyle(art.color, pulse * 0.5);
       g.fillRect(sx - h, sy - h, 1, 1);
       g.fillRect(sx + h - 1, sy - h, 1, 1);
       g.fillRect(sx - h, sy + h - 1, 1, 1);
       g.fillRect(sx + h - 1, sy + h - 1, 1, 1);
-    } else {
-      // Empty outline showing what goes here
+    } else if (!placed) {
+      // Unplaced: dim box + ghost shape outline
+      g.lineStyle(1, 0x888888, 0.6);
+      g.strokeRect(sx - h, sy - h, h * 2, h * 2);
       g.lineStyle(1, 0x999999, 0.55);
       this.drawShape(g, sx, sy, art.shape, shapeSize, false);
     }
@@ -356,7 +463,7 @@ export class ArtifactSystem {
 
   private renderConnectionLines(
     g: Phaser.GameObjects.Graphics,
-    camX: number, camY: number, pulse: number,
+    camX: number, camY: number, pulse: number, time: number,
   ): void {
     const cx = HUB_X - camX;
     const cy = HUB_Y - camY;
@@ -394,11 +501,30 @@ export class ArtifactSystem {
       const py = art.pedestalY - camY;
 
       if (art.state === 'placed') {
-        g.lineStyle(2, art.color, pulse * 0.6);
-        g.beginPath();
-        g.moveTo(px, py);
-        g.lineTo(cx, cy);
-        g.strokePath();
+        const elapsed = time - art.placedTime;
+        // Line fills after pedestal animation (1800–3200ms), half speed = 1400ms fill duration
+        const LINE_START = 1800;
+        const LINE_END = 3200;
+        if (art.placedTime > 0 && elapsed < LINE_END) {
+          if (elapsed >= LINE_START) {
+            const t = (elapsed - LINE_START) / (LINE_END - LINE_START);
+            const ex = px + (cx - px) * t;
+            const ey = py + (cy - py) * t;
+            g.lineStyle(2, art.color, pulse * 0.7);
+            g.beginPath();
+            g.moveTo(px, py);
+            g.lineTo(ex, ey);
+            g.strokePath();
+          }
+          // No line before LINE_START (pedestal animation still playing)
+        } else {
+          // Fully drawn line
+          g.lineStyle(2, art.color, pulse * 0.6);
+          g.beginPath();
+          g.moveTo(px, py);
+          g.lineTo(cx, cy);
+          g.strokePath();
+        }
       } else {
         const segs = 12;
         g.lineStyle(1, 0x777777, 0.4);
@@ -618,7 +744,8 @@ export class ArtifactSystem {
   }
 
   // ── Terrain carving (called by TerrainSystem) ──────────────────
-  static carveTerrain(buffer: PixelBuffer): void {
+  // Returns fractal zone descriptors so TerrainSystem can apply lighter-wall tinting.
+  static carveTerrain(buffer: PixelBuffer): { x: number; y: number }[] {
     // Expand center hub — clear space around each pedestal + paths to center
     for (const def of ARTIFACT_DEFS) {
       const px = HUB_X + def.pedestalDx;
@@ -638,16 +765,169 @@ export class ArtifactSystem {
     // Center circle area
     buffer.clearEllipse(HUB_X, HUB_Y, CENTER_CIRCLE_RADIUS + 8, CENTER_CIRCLE_RADIUS + 8);
 
-    // Corner rooms — circular clearings for all shapes
+    // Fractal corner rooms — one per artifact shape
+    const zones: { x: number; y: number }[] = [];
     for (const def of ARTIFACT_DEFS) {
       const { homeX: hx, homeY: hy } = def;
-      buffer.clearEllipse(hx, hy, CORNER_ROOM_SIZE, CORNER_ROOM_SIZE);
+      zones.push({ x: hx, y: hy });
 
-      // Connecting tunnel from corner room toward the world center (150px long)
-      const dirX = Math.sign(HUB_X - hx);
-      const dirY = Math.sign(HUB_Y - hy);
-      for (let i = 0; i < 150; i++) {
-        buffer.clearEllipse(hx + dirX * i, hy + dirY * i, 10, 10);
+      switch (def.shape) {
+        case 'star':     ArtifactSystem.carveFlowerRoom(buffer, hx, hy);   break;
+        case 'squares':  ArtifactSystem.carveSquareRoom(buffer, hx, hy);   break;
+        case 'coil':     ArtifactSystem.carveRhombusRoom(buffer, hx, hy);  break;
+        case 'pinwheel': ArtifactSystem.carveCircularRoom(buffer, hx, hy); break;
+      }
+    }
+
+    return zones;
+  }
+
+  // ── Irregular fill circle ───────────────────────────────────────
+  // Fills a circle of `baseR` radius with `value`, but the outer edge
+  // varies by 0–3 px using stacked sine harmonics so the boundary is
+  // bumpy rather than a perfect ring.
+  private static fillIrregularCircle(
+    buffer: PixelBuffer, cx: number, cy: number, baseR: number, value: number,
+  ): void {
+    const MAX_VAR = 12;
+    const maxR = baseR + MAX_VAR;
+    const x0 = Math.max(0, Math.floor(cx - maxR));
+    const x1 = Math.min(buffer.width - 1, Math.ceil(cx + maxR));
+    const y0 = Math.max(0, Math.floor(cy - maxR));
+    const y1 = Math.min(buffer.height - 1, Math.ceil(cy + maxR));
+
+    for (let py = y0; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const dx = px - cx;
+        const dy = py - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > maxR) continue;
+        const angle = Math.atan2(dy, dx);
+        // Many non-harmonic frequencies so the pattern never feels periodic
+        const v = (
+          Math.sin(angle * 11) * 0.30 +
+          Math.sin(angle * 19) * 0.25 +
+          Math.sin(angle *  7) * 0.20 +
+          Math.sin(angle * 29) * 0.15 +
+          Math.sin(angle * 41) * 0.10 +
+          1  // shift to 0–2 range before scaling
+        ) * 6; // final range 0–12 px
+        if (dist <= baseR + v) {
+          buffer.data[py * buffer.width + px] = value;
+        }
+      }
+    }
+  }
+
+  // ── Recursive branch carver ─────────────────────────────────────
+  // Draws a branch from (x,y) in direction `angle` for `length` px,
+  // then recursively splits into `branches` children, each scaled by
+  // `scale` and fanned by ±`spread` rad. Width tapers with depth.
+  private static carveBranch(
+    buffer: PixelBuffer,
+    x: number, y: number,
+    angle: number, length: number,
+    depth: number, maxDepth: number,
+    scale: number, spread: number, branches: number,
+    baseWidth: number,
+  ): void {
+    if (depth > maxDepth || length < 3) return;
+
+    const w = Math.max(2, baseWidth * Math.pow(scale, depth));
+    const ex = x + Math.cos(angle) * length;
+    const ey = y + Math.sin(angle) * length;
+
+    // Carve the segment as a chain of ellipses
+    const steps = Math.ceil(length / 2);
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      buffer.clearEllipse(x + Math.cos(angle) * length * t, y + Math.sin(angle) * length * t, w, w);
+    }
+
+    // Fan out children symmetrically
+    for (let b = 0; b < branches; b++) {
+      const offset = branches === 1 ? 0 : (b / (branches - 1) - 0.5) * 2 * spread;
+      ArtifactSystem.carveBranch(
+        buffer, ex, ey,
+        angle + offset, length * scale,
+        depth + 1, maxDepth,
+        scale, spread, branches, baseWidth,
+      );
+    }
+  }
+
+  // ── Flower room (top-left): Vogel golden-angle sunflower spiral ──
+  // The golden angle (~137.5°) places each point so no two share a radial
+  // line — this naturally packs ~130 clearings into a dense flower disk.
+  private static carveFlowerRoom(buffer: PixelBuffer, cx: number, cy: number): void {
+    ArtifactSystem.fillIrregularCircle(buffer, cx, cy, 92, TERRAIN_MAX_HP);
+    buffer.clearEllipse(cx, cy, 14, 14);
+
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5)); // ≈ 137.5°
+    const N = 130;
+    for (let n = 1; n <= N; n++) {
+      const angle = n * goldenAngle;
+      const r = 7.2 * Math.sqrt(n);
+      buffer.clearEllipse(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r, 5, 5);
+    }
+  }
+
+  // ── Square room (top-right): H-tree fractal ──────────────────────
+  // 4 root arms at cardinal directions; each node spawns two perpendicular
+  // children at half the length. Creates a dense fractal cross grid.
+  private static carveSquareRoom(buffer: PixelBuffer, cx: number, cy: number): void {
+    ArtifactSystem.fillIrregularCircle(buffer, cx, cy, 95, TERRAIN_MAX_HP);
+    buffer.clearEllipse(cx, cy, 14, 14);
+
+    for (let i = 0; i < 4; i++) {
+      const angle = (i / 4) * Math.PI * 2;
+      // spread = π/2 → children go ±90° = perpendicular (H-tree)
+      ArtifactSystem.carveBranch(buffer, cx, cy, angle, 44, 0, 6, 0.5, Math.PI / 2, 2, 5);
+    }
+  }
+
+  // ── Rhombus room (bottom-left): 6-fold 60° recursive fractal ─────
+  // 6 root arms at 60° intervals; each splits at ±60°.
+  // 60° angles create equilateral-triangle/rhombus tiling geometry.
+  private static carveRhombusRoom(buffer: PixelBuffer, cx: number, cy: number): void {
+    ArtifactSystem.fillIrregularCircle(buffer, cx, cy, 92, TERRAIN_MAX_HP);
+    buffer.clearEllipse(cx, cy, 14, 14);
+
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2;
+      ArtifactSystem.carveBranch(buffer, cx, cy, angle, 42, 0, 5, 0.52, Math.PI / 3, 2, 5);
+    }
+  }
+
+  // ── Circular room (bottom-right): mandala rings + radial spokes ──
+  // Concentric carved rings at r=20,38,56,74 connected by 12 radial
+  // spokes; small satellite clearings at each intersection.
+  private static carveCircularRoom(buffer: PixelBuffer, cx: number, cy: number): void {
+    ArtifactSystem.fillIrregularCircle(buffer, cx, cy, 88, TERRAIN_MAX_HP);
+    buffer.clearEllipse(cx, cy, 14, 14);
+
+    const rings = [20, 38, 56, 74];
+    const SPOKES = 12;
+
+    for (const r of rings) {
+      // Continuous ring carved as dense ellipse chain
+      const steps = Math.ceil((r * Math.PI * 2) / 5);
+      for (let i = 0; i < steps; i++) {
+        const a = (i / steps) * Math.PI * 2;
+        buffer.clearEllipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 4, 4);
+      }
+      // Larger node at each spoke/ring intersection
+      for (let s = 0; s < SPOKES; s++) {
+        const a = (s / SPOKES) * Math.PI * 2;
+        buffer.clearEllipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 6, 6);
+      }
+    }
+
+    // Radial spokes connecting all rings
+    for (let s = 0; s < SPOKES; s++) {
+      const a = (s / SPOKES) * Math.PI * 2;
+      for (let r = 10; r <= 77; r += 2) {
+        buffer.clearEllipse(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 3, 3);
       }
     }
   }
